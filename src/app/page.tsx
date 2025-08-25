@@ -17,7 +17,29 @@ export default function ConsolePage() {
 
   const helpLocked = "Commands: login, help, clear, about";
   const helpOpen =
-    "Commands: status, services, open cloud, open status, logout, help, clear, time, echo <text>";
+    "Commands: status [-v|all], services, open cloud, open status, logout, help, clear, time, echo <text>";
+
+  function tokenize(input: string): string[] {
+    // supports quotes: echo "hello world"
+    const out: string[] = [];
+    let cur = "", quote: '"' | "'" | null = null;
+    for (const ch of input.trim()) {
+      if (quote) {
+        if (ch === quote) { quote = null; continue; }
+        cur += ch;
+      } else {
+        if (ch === '"' || ch === "'") { quote = ch as '"' | "'"; continue; }
+        if (/\s/.test(ch)) { if (cur) { out.push(cur); cur = ""; } }
+        else { cur += ch; }
+      }
+    }
+    if (cur) out.push(cur);
+    return out;
+  }
+
+  function hasFlag(args: string[], ...flags: string[]) {
+    return args.some(a => flags.includes(a));
+  }
 
   async function handle(cmd: string) {
     const line = cmd.trim();
@@ -71,13 +93,43 @@ export default function ConsolePage() {
       print("Session closed. Type `login`.", "sys");
       return;
     }
-    if (line === "status") {
+    if (line.startsWith("status")) {
       try {
-        const r = await fetch("/api/status");
+        const [, ...args] = tokenize(line);
+        const verbose = hasFlag(args, "-v", "--verbose", "all");
+
+        const r = await fetch("/api/status", { cache: "no-store" });
         if (!r.ok) return print("Status error.", "err");
         const s = await r.json();
-        const upH = Math.floor(s.uptimeSec / 3600), upM = Math.floor((s.uptimeSec % 3600) / 60);
-        return print(`CPU ${s.cpuPct}%  MEM ${s.memPct}% (${s.memGB.used}/${s.memGB.total} GB)  Uptime ${upH}h${upM}m`, "sys");
+        if (!s.ok) return print("Status error.", "err");
+
+        // Accept both your old shape and the richer one I suggested
+        const totals = s.totals ?? { up: s.up ?? 0, down: s.down ?? 0, maint: s.maint ?? 0, all: s.all ?? (s.monitors?.length ?? 0) };
+        const name = s.name ?? "Luminet";
+        const header = `Status • ${name}\nUP ${totals.up}  DOWN ${totals.down}  MAINT ${totals.maint} (total ${totals.all})` +
+          (typeof s.incidents === "number" ? `  • Incidents: ${s.incidents}` : "");
+
+        if (!verbose || !Array.isArray(s.monitors)) {
+          const emoji = totals.down > 0 ? "⚠︎" : "✓";
+          return print(`${emoji} ${header}`, totals.down > 0 ? "err" : "ok");
+        }
+
+        // verbose table-ish lines
+        const lines = s.monitors
+          .slice()
+          .sort((a: any, b: any) => Number(b.status) - Number(a.status))
+          .map((m: any) => {
+            const status = m.status; // 0=DOWN,1=UP,2=PENDING,3=MAINT
+            const icon = status === 1 ? "🟢" : status === 0 ? "🔴" : status === 3 ? "🟧" : "🟡";
+            const ping  = m.avgPing != null ? `${Math.round(m.avgPing)}ms` : "-";
+            const upPct = m.uptime != null ? `${Number(m.uptime).toFixed(2)}%` : "-";
+            const beat  = m.lastBeat ? new Date(m.lastBeat).toLocaleString() : "-";
+            return `${icon} ${m.name}  |  ping ${ping}  |  uptime ${upPct}  |  last ${beat}`;
+          });
+
+        print(header);
+        for (const ln of lines) print(ln, "sys");
+        return;
       } catch {
         return print("Status error.", "err");
       }
