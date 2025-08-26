@@ -17,7 +17,7 @@ export default function ConsolePage() {
 
   const helpLocked = "Commands: login, help, clear, about";
   const helpOpen =
-    "Commands: status [-v|all], services, open cloud, open status, logout, help, clear, time, echo <text>";
+  "Commands: status [-v|all|sys], services, open cloud, open status, logout, help, clear, time, echo <text>";
 
   function tokenize(input: string): string[] {
     // supports quotes: echo "hello world"
@@ -93,45 +93,85 @@ export default function ConsolePage() {
       print("Session closed. Type `login`.", "sys");
       return;
     }
-    if (line.startsWith("status")) {
-      try {
-        const [, ...args] = tokenize(line);
-        const verbose = hasFlag(args, "-v", "--verbose", "all");
+    if (line === "status") {
+      // helper: client-side timeout so it never hangs
+      const fetchTO = (url: string, ms = 5000) => {
+        const ctl = new AbortController();
+        const id = setTimeout(() => ctl.abort(), ms);
+        return fetch(url, { cache: "no-store", signal: ctl.signal })
+          .finally(() => clearTimeout(id));
+      };
 
+      try {
+        // hit sys + services in parallel
+        const [sysP, svcP] = await Promise.allSettled([
+          fetchTO("/api/sys", 5000),
+          fetchTO("/api/status", 5000),
+        ]);
+
+        const sys = sysP.status === "fulfilled" && sysP.value.ok ? await sysP.value.json() : null;
+        const svc = svcP.status === "fulfilled" && svcP.value.ok ? await svcP.value.json() : null;
+
+        if (!sys && !svc) return print("Status error.", "err");
+
+        // hint when heartbeat is disabled but monitors exist
+        if (svc && svc.totals?.all > 0 && svc.totals.up === 0 && svc.totals.down === 0) {
+          print("Note: heartbeat unavailable — listing monitors only. Try `open status` for live view.", "sys");
+        }
+
+        // compose one-liner
+        const uptime = sys ? sys.uptime : "?";
+        const cpu = sys ? `${sys.cpu.pct}%` : "?";
+        const mem = sys ? `${sys.mem.usedGB}/${sys.mem.totalGB} GB (${sys.mem.pct}%)` : "?";
+        const disk = sys ? `${sys.disk.pct}%` : "?";
+        const net = sys ? `↑ ${sys.net.txDelta} ↓ ${sys.net.rxDelta}` : "?";
+        const services = svc ? `UP ${svc.totals.up} DOWN ${svc.totals.down} (total ${svc.totals.all})` : "?";
+
+        const overallKind: Log["kind"] = svc && svc.totals?.down > 0 ? "err" : "ok";
+        return print(
+          `Status • Uptime ${uptime} | CPU ${cpu} | RAM ${mem} | Disk ${disk} | Net ${net} | Services ${services}`,
+          overallKind as "ok" | "err"
+        );
+      } catch {
+        return print("Status error.", "err");
+      }
+    }
+    if (line === "status -v" || line === "status all") {
+      try {
         const r = await fetch("/api/status", { cache: "no-store" });
         if (!r.ok) return print("Status error.", "err");
         const s = await r.json();
         if (!s.ok) return print("Status error.", "err");
 
-        // Accept both your old shape and the richer one I suggested
-        const totals = s.totals ?? { up: s.up ?? 0, down: s.down ?? 0, maint: s.maint ?? 0, all: s.all ?? (s.monitors?.length ?? 0) };
-        const name = s.name ?? "Luminet";
-        const header = `Status • ${name}\nUP ${totals.up}  DOWN ${totals.down}  MAINT ${totals.maint} (total ${totals.all})` +
-          (typeof s.incidents === "number" ? `  • Incidents: ${s.incidents}` : "");
+        print(`Status • ${s.name} UP ${s.totals.up} DOWN ${s.totals.down} MAINT ${s.totals.maint} (total ${s.totals.all})`,
+          s.totals.down > 0 ? "err" : "ok");
 
-        if (!verbose || !Array.isArray(s.monitors)) {
-          const emoji = totals.down > 0 ? "⚠︎" : "✓";
-          return print(`${emoji} ${header}`, totals.down > 0 ? "err" : "ok");
+        if (s.note) print(s.note, "sys");
+
+        // list monitors (no heartbeat → no live fields)
+        for (const m of s.monitors) {
+          print(`• ${m.name} | ping - | uptime - | last -`, "sys");
         }
-
-        // verbose table-ish lines
-        const lines = s.monitors
-          .slice()
-          .sort((a: any, b: any) => Number(b.status) - Number(a.status))
-          .map((m: any) => {
-            const status = m.status; // 0=DOWN,1=UP,2=PENDING,3=MAINT
-            const icon = status === 1 ? "🟢" : status === 0 ? "🔴" : status === 3 ? "🟧" : "🟡";
-            const ping  = m.avgPing != null ? `${Math.round(m.avgPing)}ms` : "-";
-            const upPct = m.uptime != null ? `${Number(m.uptime).toFixed(2)}%` : "-";
-            const beat  = m.lastBeat ? new Date(m.lastBeat).toLocaleString() : "-";
-            return `${icon} ${m.name}  |  ping ${ping}  |  uptime ${upPct}  |  last ${beat}`;
-          });
-
-        print(header);
-        for (const ln of lines) print(ln, "sys");
         return;
       } catch {
         return print("Status error.", "err");
+      }
+    }
+    if (line === "status sys") {
+      try {
+        const r = await fetch("/api/sys", { cache: "no-store" });
+        if (!r.ok) return print("sys error.", "err");
+        const s = await r.json();
+        print(
+          `Uptime ${s.uptime} | CPU ${s.cpu.pct}% | RAM ${s.mem.usedGB}/${s.mem.totalGB} GB (${s.mem.pct}%) | Disk ${s.disk.pct}%`,
+          "sys"
+        );
+        return print(
+          `Net[${s.net.iface}] ↑ ${s.net.txDelta} ↓ ${s.net.rxDelta} (window ${s.net.windowSec}s) — totals ↑ ${s.net.txTotal} ↓ ${s.net.rxTotal}`,
+          "sys"
+        );
+      } catch {
+        return print("sys error.", "err");
       }
     }
     if (line === "services") return print("cloud, status (Kuma), git (future)", "sys");
