@@ -5,8 +5,8 @@ type Log = { t: string; kind?: "ok" | "err" | "sys" };
 
 export default function ConsolePage() {
   const [logs, setLogs] = useState<Log[]>([
-    { t: "Luminet v0.1 – console online.", kind: "sys" },
-    { t: "No active session. Type `login` to enter Lumen Cipher.", kind: "err" },
+    { t: "Luminet v0.1. Connected to the Lumina Box.", kind: "sys" },
+    { t: "No active session. Type 'key' to enter Lumen Cipher.", kind: "err" },
   ]);
   const [input, setInput] = useState("");
   const [authed, setAuthed] = useState(false);
@@ -15,7 +15,7 @@ export default function ConsolePage() {
 
   const print = (t: string, kind?: Log["kind"]) => setLogs((x) => [...x, { t, kind }]);
 
-  const helpLocked = "Commands: login, help, clear, about";
+  const helpLocked = "Commands: key, help, clear, about";
   const helpOpen =
   "Commands: status [-v|all|sys], services, open cloud, open status, logout, help, clear, time, echo <text>";
 
@@ -64,7 +64,7 @@ export default function ConsolePage() {
         print("Too many attempts. Wait a minute.", "err");
       } else {
         print("Access denied.", "err");
-        print("Type `login` to try again.");
+        print("Type 'key' to try again.");
       }
       return;
     }
@@ -73,12 +73,12 @@ export default function ConsolePage() {
       if (line === "help") return print(helpLocked);
       if (line === "about") return print("Console gateway to the Lumina Box.");
       if (line === "clear") return setLogs([]);
-      if (line === "login") {
+      if (line === "key") {
         print("Enter cipher:", "sys");
         setAwaitingCipher(true);
         return;
       }
-      return print("Unauthorized. Type `login`.", "err");
+      return print("Unauthorized. Type 'key'.", "err");
     }
 
     // ---- UNLOCKED ----
@@ -90,7 +90,7 @@ export default function ConsolePage() {
       await fetch("/api/auth/logout", { method: "POST" });
       setAuthed(false);
       setAwaitingCipher(false);
-      print("Session closed. Type `login`.", "sys");
+      print("Session closed. Type 'key'.", "sys");
       return;
     }
     if (line === "status") {
@@ -207,7 +207,7 @@ export default function ConsolePage() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             className="flex-1 bg-zinc-900 border border-zinc-800 rounded px-3 py-2 outline-none"
-            placeholder={awaitingCipher ? "Paste cipher…" : "Type a command…"}
+            placeholder={awaitingCipher ? "Lumen cipher: " : "Lumina is listening…"}
           />
           <button className="px-3 py-2 bg-zinc-800 hover:bg-zinc-700 rounded">Run</button>
         </form>
