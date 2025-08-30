@@ -13,9 +13,16 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Sync to live dir
+      - name: Debug whoami and target perms
+        run: |
+          whoami
+          id
+          ls -la /var/www/luminet/luminet-web || true
+
+      - name: Sync to live dir (rsync, no perms/owner/group changes)
         run: |
           rsync -az --delete \
+            --no-perms --no-owner --no-group --omit-dir-times \
             --exclude="node_modules" \
             --exclude=".next" \
             ./ /var/www/luminet/luminet-web/
