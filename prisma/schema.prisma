@@ -1,0 +1,25 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  OWNER
+  ADMIN
+  USER
+}
+
+model UserCipher {
+  id        String   @id
+  label     String?
+  role      Role     @default(USER)
+  hash2     String
+  createdAt DateTime @default(now())
+  revokedAt DateTime?
+
+  @@index([revokedAt])
+}
