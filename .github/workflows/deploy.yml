@@ -1,0 +1,27 @@
+name: Deploy (self-hosted)
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        working-directory: /var/www/luminet/luminet-web
+        run: npm ci --omit=dev
+
+      - name: Build project
+        working-directory: /var/www/luminet/luminet-web
+        run: npm run build
+
+      - name: Restart PM2
+        working-directory: /var/www/luminet/luminet-web
+        run: |
+          pm2 describe luminet >/dev/null 2>&1 && pm2 restart luminet || pm2 start ecosystem.config.js
