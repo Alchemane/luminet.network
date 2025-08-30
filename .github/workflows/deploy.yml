@@ -7,6 +7,11 @@ on:
 jobs:
   deploy:
     runs-on: self-hosted
+    timeout-minutes: 20
+    concurrency:
+      group: deploy-${{ github.ref }}
+      cancel-in-progress: true
+
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
@@ -23,7 +28,7 @@ jobs:
 
       - name: Install deps
         working-directory: /var/www/luminet/luminet-web
-        run: npm ci --omit=dev
+        run: npm ci
 
       - name: Generate Prisma Client
         working-directory: /var/www/luminet/luminet-web
@@ -38,6 +43,10 @@ jobs:
       - name: Build
         working-directory: /var/www/luminet/luminet-web
         run: npm run build --verbose
+
+      - name: Prune dev deps
+        working-directory: /var/www/luminet/luminet-web
+        run: npm prune --omit=dev
 
       - name: Restart PM2
         working-directory: /var/www/luminet/luminet-web
