@@ -8,36 +8,34 @@ jobs:
   deploy:
     runs-on: self-hosted
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
 
-      - name: Debug whoami and target perms
-        run: |
-          whoami
-          id
-          ls -la /var/www/luminet/luminet-web || true
-
-      - name: Sync to live dir (rsync, no perms/owner/group changes)
+      - name: Sync to live dir (keep prisma/.env and DB)
         run: |
           rsync -az --delete \
             --no-perms --no-owner --no-group --omit-dir-times \
             --exclude="node_modules" \
             --exclude=".next" \
+            --exclude="data/luminet.db" \
+            --exclude="prisma/.env" \
             ./ /var/www/luminet/luminet-web/
 
-      - name: Install dependencies
+      - name: Install deps
         working-directory: /var/www/luminet/luminet-web
         run: npm ci --omit=dev
 
-      - name: Apply DB migrations
+      - name: Generate Prisma Client
+        working-directory: /var/www/luminet/luminet-web
+        run: npx prisma generate
+
+      - name: (Optional) DB migrate
         working-directory: /var/www/luminet/luminet-web
         run: npx prisma migrate deploy || true
 
-      - name: Build project
+      - name: Build
         working-directory: /var/www/luminet/luminet-web
-        run: npm run build
+        run: npm run build --verbose
 
       - name: Restart PM2
         working-directory: /var/www/luminet/luminet-web
@@ -45,4 +43,4 @@ jobs:
           pm2 describe luminet >/dev/null 2>&1 && pm2 restart luminet || pm2 start ecosystem.config.js
 
       - name: Health check
-        run: curl -fsS http://127.0.0.1:3000/api/ping || (pm2 logs --lines 120 && exit 1)
+        run: curl -fsS http://127.0.0.1:3000/api/ping || (pm2 logs --lines 200 && exit 1)
