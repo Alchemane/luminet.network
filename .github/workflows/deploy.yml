@@ -13,9 +13,20 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Sync to live dir
+        run: |
+          rsync -az --delete \
+            --exclude="node_modules" \
+            --exclude=".next" \
+            ./ /var/www/luminet/luminet-web/
+
       - name: Install dependencies
         working-directory: /var/www/luminet/luminet-web
         run: npm ci --omit=dev
+
+      - name: Apply DB migrations
+        working-directory: /var/www/luminet/luminet-web
+        run: npx prisma migrate deploy || true
 
       - name: Build project
         working-directory: /var/www/luminet/luminet-web
@@ -25,3 +36,6 @@ jobs:
         working-directory: /var/www/luminet/luminet-web
         run: |
           pm2 describe luminet >/dev/null 2>&1 && pm2 restart luminet || pm2 start ecosystem.config.js
+
+      - name: Health check
+        run: curl -fsS http://127.0.0.1:3000/api/ping || (pm2 logs --lines 120 && exit 1)
