@@ -29,8 +29,10 @@ jobs:
         working-directory: /var/www/luminet/luminet-web
         run: npx prisma generate
 
-      - name: (Optional) DB migrate
+      - name: Apply DB migrations
         working-directory: /var/www/luminet/luminet-web
+        env:
+          DATABASE_URL: "file:./data/luminet.db"
         run: npx prisma migrate deploy || true
 
       - name: Build
