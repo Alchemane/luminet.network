@@ -1,49 +1,103 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-// ---- Types ----
-export type Log = { t: string; kind?: "ok" | "err" | "sys" };
-type CmdHandler = (args: string[], flags: Record<string, string | boolean>) => Promise<void>;
+/* ==============================
+   types / helpers
+============================== */
+export type Log = {
+  t: string;
+  kind?: "ok" | "err" | "sys";
+  animate?: boolean; // new: per-line animation toggle
+};
+type Flags = Record<string, string | boolean>;
+type CmdHandler = (args: string[], flags: Flags) => Promise<void>;
 
-// ---- Helpers ----
 const fmt = {
-  ok: (t: string): Log => ({ t, kind: "ok" }),
-  err: (t: string): Log => ({ t, kind: "err" }),
-  sys: (t: string): Log => ({ t, kind: "sys" }),
+  ok: (t: string, animate = true): Log => ({ t, kind: "ok", animate }),
+  err: (t: string, animate = true): Log => ({ t, kind: "err", animate }),
+  sys: (t: string, animate = true): Log => ({ t, kind: "sys", animate }),
 };
 
-function parse(input: string): { cmd: string; args: string[]; flags: Record<string, string | boolean> } {
+function parse(input: string): { cmd: string; args: string[]; flags: Flags } {
   const parts = input.trim().split(/\s+/).filter(Boolean);
   const cmd = (parts.shift() || "").toLowerCase();
-  const flags: Record<string, string | boolean> = {};
+  const flags: Flags = {};
   const args: string[] = [];
   for (const p of parts) {
     if (p.startsWith("--")) {
       const [k, v] = p.slice(2).split("=");
       flags[k] = v ?? true;
     } else if (p.startsWith("-")) {
-      // short flags mapping
       for (const ch of p.slice(1)) flags[ch] = true;
     } else {
       args.push(p);
     }
   }
-  // normalize common flags
   if (flags.l || flags.long) flags.long = true;
   if (flags.j || flags.json) flags.json = true;
   return { cmd, args, flags };
 }
 
-async function getJSON<T = any>(url: string, init?: RequestInit): Promise<T> {
+async function getJSON<T = unknown>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   const ct = res.headers.get("content-type") || "";
-  if (ct.includes("application/json")) return (await res.json()) as T;
-  // fall back to text
-  return (await res.text()) as unknown as T;
+  return (ct.includes("application/json") ? (await res.json()) : (await res.text())) as T;
 }
 
-// ---- component ----
+function errMsg(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+/* ==============================
+   typewriter line component
+============================== */
+function TypeLine({
+  text,
+  speed = 14,
+  className,
+  onProgress,
+  animate = true,
+}: {
+  text: string;
+  speed?: number;
+  className?: string;
+  onProgress?: () => void;
+  animate?: boolean;
+}) {
+  const [shown, setShown] = useState<string>(animate ? "" : text);
+  const idxRef = useRef(0);
+
+  useEffect(() => {
+    // skip animation for very long outputs to avoid jank
+    const shouldAnimate = animate && text.length <= 2000;
+    if (!shouldAnimate) {
+      setShown(text);
+      onProgress?.();
+      return;
+    }
+
+    setShown("");
+    idxRef.current = 0;
+    const timer = setInterval(() => {
+      idxRef.current++;
+      setShown(text.slice(0, idxRef.current));
+      onProgress?.();
+      if (idxRef.current >= text.length) clearInterval(timer);
+    }, speed);
+
+    return () => clearInterval(timer);
+  }, [text, speed, animate, onProgress]);
+
+  // split into hard-wrapped lines but keep monospace spacing
+  return (
+    <div className={`font-mono whitespace-pre-wrap leading-6 ${className || ""}`}>{shown}</div>
+  );
+}
+
+/* ==============================
+   page component
+============================== */
 export default function ConsolePage() {
   const [logs, setLogs] = useState<Log[]>([
     fmt.sys("Luminet Console connected to Lumina Box."),
@@ -52,16 +106,23 @@ export default function ConsolePage() {
   const [input, setInput] = useState("");
   const [authed, setAuthed] = useState(false);
   const [awaitingCipher, setAwaitingCipher] = useState(false);
+
   const boxRef = useRef<HTMLDivElement>(null);
 
-  // auto scroll
+  // smooth auto scroll also called during typing via onProgress
+  const scrollToBottom = () => {
+    const el = boxRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  };
   useEffect(() => {
-    boxRef.current?.scrollTo({ top: boxRef.current.scrollHeight, behavior: "smooth" });
+    scrollToBottom();
   }, [logs.length]);
 
-  const print = (t: string, kind?: Log["kind"]) => setLogs((x) => [...x, { t, kind }]);
+  const print = (t: string, kind?: Log["kind"], animate = true) =>
+    setLogs((x) => [...x, { t, kind, animate }]);
 
-  // ---- command handlers ----
+  /* ---------- command handlers ---------- */
   const handlers: Record<string, CmdHandler> = useMemo(() => {
     const h: Record<string, CmdHandler> = {};
 
@@ -82,14 +143,15 @@ export default function ConsolePage() {
           "  whoami                      • session info",
           "  login / key                 • enter cipher → session cookie",
           "  logout                      • clear session",
-          "  open <cloud|status|git>     • quick links",
+          "  open <status|git>           • quick links",
           "  time                        • server time",
           "  echo <text>, clear, about   • utility",
-        ].join("\n")
-      , "sys");
+        ].join("\n"),
+        "sys"
+      );
     };
 
-    h.clear = async () => setLogs([] as Log[]);
+    h.clear = async () => setLogs([]);
 
     h.about = async () => {
       print("Luminet • unified console • status + deep dives • auth via cipher → JWT", "sys");
@@ -99,10 +161,10 @@ export default function ConsolePage() {
 
     h.time = async () => {
       try {
-        const data = await getJSON<{ now: string; tz?: string }>(`/api/time`);
+        const data = await getJSON<{ now: string; tz?: string }>("/api/time");
         print(`Server time: ${data.now}${data.tz ? ` (${data.tz})` : ""}`, "sys");
-      } catch (e: any) {
-        print(`time: ${e.message}`, "err");
+      } catch (e) {
+        print(`time: ${errMsg(e)}`, "err");
       }
     };
 
@@ -112,22 +174,27 @@ export default function ConsolePage() {
       print("Enter Lumen cipher:");
     };
 
-    h.key = h.login; // alias
+    h.key = h.login;
 
     h.logout = async () => {
       try {
         await fetch("/api/auth/logout", { method: "POST" });
-      } catch {}
+      } catch {
+        /* noop */
+      }
       setAuthed(false);
       print("Session cleared.", "ok");
     };
 
     h.whoami = async () => {
       try {
-        const s = await getJSON<{ authenticated: boolean; exp?: string; ip?: string }>(`/api/session`);
-        print(`Auth: ${s.authenticated ? "yes" : "no"}${s.exp ? ` • exp ${s.exp}` : ""}${s.ip ? ` • ip ${s.ip}` : ""}`, "sys");
-      } catch (e: any) {
-        print(`whoami: ${e.message}`, "err");
+        const s = await getJSON<{ authenticated: boolean; exp?: string; ip?: string }>("/api/session");
+        print(
+          `Auth: ${s.authenticated ? "yes" : "no"}${s.exp ? ` • exp ${s.exp}` : ""}${s.ip ? ` • ip ${s.ip}` : ""}`,
+          "sys"
+        );
+      } catch (e) {
+        print(`whoami: ${errMsg(e)}`, "err");
       }
     };
 
@@ -139,40 +206,50 @@ export default function ConsolePage() {
         const ct = res.headers.get("content-type") || "";
         if (ct.includes("application/json")) {
           const data = await res.json();
-          print(JSON.stringify(data, null, 2));
+          // huge JSON: print without animation
+          print(JSON.stringify(data, null, 2), "sys", false);
         } else {
-          const text = await res.text();
-          print(text, "sys");
+          print(await res.text(), "sys");
         }
-      } catch (e: any) {
-        print(`status: ${e.message}`, "err");
+      } catch (e) {
+        print(`status: ${errMsg(e)}`, "err");
       }
     };
 
     h.sys = async (_args, flags) => {
       try {
         const data = await getJSON(`/api/sys${flags.json ? "?format=json" : ""}`);
-        if (typeof data === "string") print(data, "sys"); else print(JSON.stringify(data, null, 2));
-      } catch (e: any) {
-        print(`sys: ${e.message}`, "err");
+        typeof data === "string"
+          ? print(data, "sys")
+          : print(JSON.stringify(data, null, 2), "sys", false);
+      } catch (e) {
+        print(`sys: ${errMsg(e)}`, "err");
       }
     };
 
-    h.net = async (args, flags) => {
-      const params = new URLSearchParams();
-      if (flags.iface && typeof flags.iface === "string") params.set("iface", String(flags.iface));
-      if (flags.json) params.set("format", "json");
+    h.net = async (_args, flags) => {
+      const q = new URLSearchParams();
+      if (flags.iface && typeof flags.iface === "string") q.set("iface", String(flags.iface));
+      if (flags.json) q.set("format", "json");
       try {
-        const data = await getJSON(`/api/net${params.size ? "?" + params.toString() : ""}`);
-        if (typeof data === "string") print(data, "sys"); else print(JSON.stringify(data, null, 2));
-      } catch (e: any) { print(`net: ${e.message}`, "err"); }
+        const data = await getJSON(`/api/net${q.size ? "?" + q.toString() : ""}`);
+        typeof data === "string"
+          ? print(data, "sys")
+          : print(JSON.stringify(data, null, 2), "sys", false);
+      } catch (e) {
+        print(`net: ${errMsg(e)}`, "err");
+      }
     };
 
     h.services = async (_args, flags) => {
       try {
         const data = await getJSON(`/api/services${flags.json ? "?format=json" : ""}`);
-        if (typeof data === "string") print(data, "sys"); else print(JSON.stringify(data, null, 2));
-      } catch (e: any) { print(`services: ${e.message}`, "err"); }
+        typeof data === "string"
+          ? print(data, "sys")
+          : print(JSON.stringify(data, null, 2), "sys", false);
+      } catch (e) {
+        print(`services: ${errMsg(e)}`, "err");
+      }
     };
 
     h.ps = async (_args, flags) => {
@@ -182,8 +259,12 @@ export default function ConsolePage() {
       if (flags.json) q.set("format", "json");
       try {
         const data = await getJSON(`/api/ps${q.size ? "?" + q.toString() : ""}`);
-        if (typeof data === "string") print(data); else print(JSON.stringify(data, null, 2));
-      } catch (e: any) { print(`ps: ${e.message}`, "err"); }
+        typeof data === "string"
+          ? print(String(data))
+          : print(JSON.stringify(data, null, 2), undefined, false);
+      } catch (e) {
+        print(`ps: ${errMsg(e)}`, "err");
+      }
     };
 
     h.ports = async (_args, flags) => {
@@ -193,8 +274,12 @@ export default function ConsolePage() {
       if (flags.json) q.set("format", "json");
       try {
         const data = await getJSON(`/api/ports${q.size ? "?" + q.toString() : ""}`);
-        if (typeof data === "string") print(data); else print(JSON.stringify(data, null, 2));
-      } catch (e: any) { print(`ports: ${e.message}`, "err"); }
+        typeof data === "string"
+          ? print(data, "sys")
+          : print(JSON.stringify(data, null, 2), "sys", false);
+      } catch (e) {
+        print(`ports: ${errMsg(e)}`, "err");
+      }
     };
 
     h.ping = async (args, _flags) => {
@@ -203,8 +288,12 @@ export default function ConsolePage() {
       if (_flags.count) q.set("count", String(_flags.count));
       try {
         const data = await getJSON(`/api/ping?${q.toString()}`);
-        if (typeof data === "string") print(data, "sys"); else print(JSON.stringify(data, null, 2));
-      } catch (e: any) { print(`ping: ${e.message}`, "err"); }
+        typeof data === "string"
+          ? print(data, "sys")
+          : print(JSON.stringify(data, null, 2), "sys", false);
+      } catch (e) {
+        print(`ping: ${errMsg(e)}`, "err");
+      }
     };
 
     h.dns = async (args, flags) => {
@@ -213,8 +302,12 @@ export default function ConsolePage() {
       if (flags.type && typeof flags.type === "string") q.set("type", String(flags.type));
       try {
         const data = await getJSON(`/api/dns?${q.toString()}`);
-        if (typeof data === "string") print(data, "sys"); else print(JSON.stringify(data, null, 2));
-      } catch (e: any) { print(`dns: ${e.message}`, "err"); }
+        typeof data === "string"
+          ? print(data, "sys")
+          : print(JSON.stringify(data, null, 2), "sys", false);
+      } catch (e) {
+        print(`dns: ${errMsg(e)}`, "err");
+      }
     };
 
     h.http = async (args, flags) => {
@@ -223,8 +316,12 @@ export default function ConsolePage() {
       if (flags.head) q.set("head", "1");
       try {
         const data = await getJSON(`/api/http?${q.toString()}`);
-        if (typeof data === "string") print(data, "sys"); else print(JSON.stringify(data, null, 2));
-      } catch (e: any) { print(`http: ${e.message}`, "err"); }
+        typeof data === "string"
+          ? print(data, "sys")
+          : print(JSON.stringify(data, null, 2), "sys", false);
+      } catch (e) {
+        print(`http: ${errMsg(e)}`, "err");
+      }
     };
 
     h.disk = async (_args, flags) => {
@@ -234,19 +331,21 @@ export default function ConsolePage() {
       if (flags.json) q.set("format", "json");
       try {
         const data = await getJSON(`/api/disk${q.size ? "?" + q.toString() : ""}`);
-        if (typeof data === "string") print(data, "sys"); else print(JSON.stringify(data, null, 2));
-      } catch (e: any) { print(`disk: ${e.message}`, "err"); }
+        typeof data === "string"
+          ? print(data, "sys")
+          : print(JSON.stringify(data, null, 2), "sys", false);
+      } catch (e) {
+        print(`disk: ${errMsg(e)}`, "err");
+      }
     };
 
     h.open = async (args) => {
       const target = (args[0] || "").toLowerCase();
       const map: Record<string, string> = {
         status: "https://status.luminet.network/",
-        // cloud: "https://cloud.luminet.network/",
-
       };
       const url = map[target];
-      if (!url) return print("open: unknown target. Try: cloud, status, git", "err");
+      if (!url) return print("open: unknown target. Try: status", "err");
       window.open(url, "_blank", "noreferrer");
       print(`Opened ${target}.`, "ok");
     };
@@ -254,13 +353,15 @@ export default function ConsolePage() {
     return h;
   }, [authed]);
 
-  // input submit
+  /* ---------- input / submit ---------- */
   async function run(e?: React.FormEvent) {
     e?.preventDefault();
     const raw = input.trim();
     if (!raw) return;
     setInput("");
-    print(`> ${raw}`);
+
+    // show the typed command immediately (animated fast)
+    print(`λ ${raw}`, "sys");
 
     // cipher capture flow
     if (awaitingCipher && !authed) {
@@ -274,34 +375,32 @@ export default function ConsolePage() {
         if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
         setAuthed(true);
         print("Cipher accepted. Session unlocked.", "ok");
-        // show session info
-        await handlers.whoami([], {} as any);
-      } catch (e: any) {
-        print(`Auth failed: ${e.message}`, "err");
+        await handlers.whoami([], {});
+      } catch (e) {
+        print(`Auth failed: ${errMsg(e)}`, "err");
       }
       return;
     }
 
     const { cmd, args, flags } = parse(raw);
-
-    // aliases (non auth)
-    const alias: Record<string, string> = {
-      health: "status",
-      key: "login",
-      ip: "net",
-      uptime: "sys",
-    };
+    const alias: Record<string, string> = { health: "status", key: "login", ip: "net", uptime: "sys" };
     const verb = alias[cmd] || cmd;
 
-    const handler = handlers[verb as keyof typeof handlers];
-    if (!handler) {
-      print(`Unknown command: ${cmd}. Try 'help'.`, "err");
-      return;
-    }
+    const handler = handlers[verb];
+    if (!handler) return print(`Unknown command: ${cmd}. Try 'help'.`, "err");
 
-    // protected commands
     const protectedSet = new Set([
-      "status", "sys", "net", "services", "ps", "ports", "disk", "ping", "dns", "http", "whoami",
+      "status",
+      "sys",
+      "net",
+      "services",
+      "ps",
+      "ports",
+      "disk",
+      "ping",
+      "dns",
+      "http",
+      "whoami",
     ]);
     if (protectedSet.has(verb) && !authed) {
       print("This command requires login. Type 'login' to authenticate.", "err");
@@ -310,8 +409,8 @@ export default function ConsolePage() {
 
     try {
       await handler(args, flags);
-    } catch (e: any) {
-      print(String(e?.message || e), "err");
+    } catch (e) {
+      print(errMsg(e), "err");
     }
   }
 
@@ -319,19 +418,35 @@ export default function ConsolePage() {
     <main className="min-h-screen bg-zinc-950 text-zinc-100">
       <div className="max-w-3xl mx-auto px-4 py-8">
         <h1 className="text-xl font-semibold tracking-tight mb-4">Luminet Console</h1>
+
         <div
           ref={boxRef}
           className="h-[60vh] overflow-y-auto rounded-xl border border-zinc-800 bg-zinc-900 p-4 space-y-1"
         >
-          {logs.map((l, i) => (
-            <div key={i} className={
-              l.kind === "err" ? "text-red-400" : l.kind === "ok" ? "text-emerald-400" : l.kind === "sys" ? "text-zinc-300" : ""
-            }>
-              {l.t.split("\n").map((line, idx) => (
-                <div key={idx} className="font-mono whitespace-pre-wrap leading-6">{line}</div>
-              ))}
-            </div>
-          ))}
+          {logs.map((l, i) => {
+            const color =
+              l.kind === "err"
+                ? "text-red-400"
+                : l.kind === "ok"
+                ? "text-emerald-400"
+                : l.kind === "sys"
+                ? "text-zinc-300"
+                : "";
+            // split on newline to animate each physical line independently
+            const lines = l.t.split("\n");
+            return (
+              <div key={i} className={color}>
+                {lines.map((line, idx) => (
+                  <TypeLine
+                    key={idx}
+                    text={line}
+                    animate={l.animate !== false}
+                    onProgress={scrollToBottom}
+                  />
+                ))}
+              </div>
+            );
+          })}
         </div>
 
         <form onSubmit={run} className="mt-4 flex items-center gap-2">
@@ -341,7 +456,7 @@ export default function ConsolePage() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "l" && (e.ctrlKey || e.metaKey)) { // ctrl+l to clear
+              if (e.key === "l" && (e.ctrlKey || e.metaKey)) {
                 e.preventDefault();
                 setLogs([]);
               }
@@ -349,11 +464,15 @@ export default function ConsolePage() {
             className="flex-1 bg-zinc-900 border border-zinc-800 rounded px-3 py-2 outline-none font-mono"
             placeholder={awaitingCipher ? "Lumen cipher:" : "Type a command… (try 'help')"}
           />
-          <button type="submit" className="px-3 py-2 bg-zinc-800 hover:bg-zinc-700 rounded">Run</button>
+          <button type="submit" className="px-3 py-2 bg-zinc-800 hover:bg-zinc-700 rounded">
+            Run
+          </button>
         </form>
 
         <div className="mt-2 text-xs text-zinc-500 font-mono">
-          Tips: <kbd className="px-1 py-0.5 border border-zinc-700 rounded">Ctrl</kbd>+<kbd className="px-1 py-0.5 border border-zinc-700 rounded">L</kbd> to clear · Use <code>--long</code> or <code>--json</code> for detail
+          Tips: <kbd className="px-1 py-0.5 border border-zinc-700 rounded">Ctrl</kbd>+
+          <kbd className="px-1 py-0.5 border border-zinc-700 rounded">L</kbd> to clear · Use{" "}
+          <code>--long</code> or <code>--json</code> for detail
         </div>
       </div>
     </main>
