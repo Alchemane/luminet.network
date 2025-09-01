@@ -30,17 +30,14 @@ export default function Output({
             : l.kind === "sys"
             ? "text-zinc-300"
             : "";
-        const lines = l.t.split("\n");
         return (
           <div key={i} className={color}>
-            {lines.map((line, idx) => (
-              <TypeLine
-                key={idx}
-                text={line}
-                animate={l.animate !== false}
-                onProgress={onProgress}
-              />
-            ))}
+            {/* one TypeLine per log: types across newlines sequentially */}
+            <TypeLine
+              text={l.t}
+              animate={l.animate !== false}
+              onProgress={onProgress}
+            />
           </div>
         );
       })}
