@@ -18,11 +18,11 @@ export default function Console() {
 
         <form onSubmit={run} className="mt-4 flex items-center gap-2">
           <span className="font-mono text-sm">
-            <span className="text-zinc-800">@</span>
-            <span className="text-emerald-800">luminet</span>
-            <span className="text-zinc-800">:</span>
-            <span className="text-sky-800">~</span>
-            <span className="text-zinc-800">$</span>
+            <span className="text-zinc-400">@</span>
+            <span className="text-emerald-400">luminet</span>
+            <span className="text-zinc-400">:</span>
+            <span className="text-sky-400">~</span>
+            <span className="text-zinc-400">$</span>
           </span>
           <input
             autoFocus
